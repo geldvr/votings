@@ -1,3 +1,5 @@
+from threading import Lock
+
 from django.apps import apps
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
@@ -7,6 +9,8 @@ from django_tables2 import RequestConfig
 from .admin import close_voting
 from .models import Voting, VotingStatus, VotingCandidate, CandidateVotes
 from .tables import VotingTable, VotingCandidatesTable
+
+mutex = Lock()
 
 
 class VotingsView(ListView):
@@ -89,8 +93,9 @@ class SendVoteView(ListView):
         candidate = get_object_or_404(VotingCandidate.objects.filter(
             voting_id=voting_id, candidate_id=candidate_id).select_related('voting_id'))
 
+        self.message = "Sorry, voting '{}' is over:(".format(candidate.voting_id.title)
+        successful_vote_message = 'Thank you for your vote!'
         if candidate.voting_id.status != VotingStatus.ACTIVE:
-            self.message = "Sorry, voting '{}' is over:(".format(candidate.voting_id.title)
             return
 
         x_forwarded_for = self.request.META.get('HTTP_X_FORWARDED_FOR')
@@ -105,12 +110,25 @@ class SendVoteView(ListView):
             self.message = 'You already participated in the vote:('
             return
 
-        self.message = 'Thank you for your vote!'
-        CandidateVotes(voting_candidate_ids=candidate, ip_address=ip).save()
-
         if candidate.voting_id.max_votes > 0:
+            mutex.acquire()
+            if candidate.voting_id.status == VotingStatus.FINISHED:
+                mutex.release()
+                return
+
             candidate_votes = VotingCandidate.objects.filter(candidate_id=candidate_id, voting_id=voting_id). \
                 annotate(votes_num=Count('candidatevotes__ip_address'))
 
-            if candidate_votes[0].votes_num >= candidate.voting_id.max_votes:
+            candidate_votes_number = candidate_votes[0].votes_num
+            if candidate_votes_number >= candidate.voting_id.max_votes:
                 close_voting(candidate.voting_id)
+                mutex.release()
+                return
+
+            self.message = successful_vote_message
+            CandidateVotes(voting_candidate_ids=candidate, ip_address=ip).save()
+            if candidate_votes_number + 1 >= candidate.voting_id.max_votes:
+                close_voting(candidate.voting_id)
+            mutex.release()
+        else:
+            CandidateVotes(voting_candidate_ids=candidate, ip_address=ip).save()
