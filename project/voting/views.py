@@ -131,4 +131,5 @@ class SendVoteView(ListView):
                 close_voting(candidate.voting_id)
             mutex.release()
         else:
+            self.message = successful_vote_message
             CandidateVotes(voting_candidate_ids=candidate, ip_address=ip).save()
